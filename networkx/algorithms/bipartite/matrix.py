@@ -7,7 +7,10 @@ Biadjacency matrices
 import itertools
 
 import networkx as nx
-from networkx.convert_matrix import _generate_weighted_edges
+from networkx.convert_matrix import (
+    _generate_numpy_weighted_edges,
+    _generate_weighted_edges,
+)
 
 __all__ = ["biadjacency_matrix", "from_biadjacency_matrix"]
 
@@ -154,6 +157,9 @@ def from_biadjacency_matrix(
     ----------
     [1] https://en.wikipedia.org/wiki/Adjacency_matrix#Adjacency_matrix_of_a_bipartite_graph
     """
+    import numpy as np
+    import scipy as sp
+
     G = nx.empty_graph(0, create_using)
     n, m = A.shape
     # Check lengths of nodelists match dimensions of A, if not specified set
@@ -167,7 +173,18 @@ def from_biadjacency_matrix(
     G.add_nodes_from(range(n, n + m), bipartite=1)
     # Create an iterable over (u, v, w) triples and for each triple, add an
     # edge from u to v with weight w.
-    triples = ((u, n + v, d) for (u, v, d) in _generate_weighted_edges(A))
+    if sp.sparse.issparse(A):
+        triples = ((u, n + v, d) for (u, v, d) in _generate_weighted_edges(A))
+    elif isinstance(A, np.ndarray):
+        triples = (
+            (u, n + v, d[edge_attribute])
+            for (u, v, d) in _generate_numpy_weighted_edges(
+                A, G, parallel_edges=False, edge_attr=edge_attribute
+            )
+        )
+    else:
+        raise ValueError("A must be a scipy sparse array or a numpy array")
+
     # If the entries in the adjacency matrix are integers and the graph is a
     # multigraph, then create parallel edges, each with weight 1, for each
     # entry in the adjacency matrix. Otherwise, create one edge for each

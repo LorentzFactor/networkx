@@ -773,6 +773,75 @@ def _generate_weighted_edges(A):
     return _coo_gen_triples(A.tocoo())
 
 
+def _generate_numpy_weighted_edges(A, G, edge_attr, parallel_edges):
+    kind_to_python_type = {
+        "f": float,
+        "i": int,
+        "u": int,
+        "b": bool,
+        "c": complex,
+        "S": str,
+        "U": str,
+        "V": "void",
+    }
+
+    dt = A.dtype
+    try:
+        python_type = kind_to_python_type[dt.kind]
+    except Exception as err:
+        raise TypeError(f"Unknown numpy data type: {dt}") from err
+
+    # Get a list of all the entries in the array with nonzero entries. These
+    # coordinates become edges in the graph. (convert to int from np.int64)
+    edges = ((int(e[0]), int(e[1])) for e in zip(*A.nonzero()))
+
+    # handle numpy constructed data type
+    if python_type == "void":
+        # Sort the fields by their offset, then by dtype, then by name.
+        fields = sorted(
+            (offset, dtype, name) for name, (dtype, offset) in A.dtype.fields.items()
+        )
+        triples = (
+            (
+                u,
+                v,
+                {}
+                if edge_attr in [False, None]
+                else {
+                    name: kind_to_python_type[dtype.kind](val)
+                    for (_, dtype, name), val in zip(fields, A[u, v])
+                },
+            )
+            for u, v in edges
+        )
+    # If the entries in the adjacency matrix are integers, the graph is a
+    # multigraph, and parallel_edges is True, then create parallel edges, each
+    # with weight 1, for each entry in the adjacency matrix. Otherwise, create
+    # one edge for each positive entry in the adjacency matrix and set the
+    # weight of that edge to be the entry in the matrix.
+    elif python_type is int and G.is_multigraph() and parallel_edges:
+        chain = itertools.chain.from_iterable
+        # The following line is equivalent to:
+        #
+        #     for (u, v) in edges:
+        #         for d in range(A[u, v]):
+        #             G.add_edge(u, v, weight=1)
+        #
+        if edge_attr in [False, None]:
+            triples = chain(((u, v, {}) for d in range(A[u, v])) for (u, v) in edges)
+        else:
+            triples = chain(
+                ((u, v, {edge_attr: 1}) for d in range(A[u, v])) for (u, v) in edges
+            )
+    else:  # basic data type
+        if edge_attr in [False, None]:
+            triples = ((u, v, {}) for u, v in edges)
+        else:
+            triples = ((u, v, {edge_attr: python_type(A[u, v])}) for u, v in edges)
+
+    return triples
+
+
 @nx._dispatchable(graphs=None, returns_graph=True)
 def from_scipy_sparse_array(
     A, parallel_edges=False, create_using=None, edge_attribute="weight"
@@ -1221,27 +1290,12 @@ def from_numpy_array(
     1.0
 
     """
-    kind_to_python_type = {
-        "f": float,
-        "i": int,
-        "u": int,
-        "b": bool,
-        "c": complex,
-        "S": str,
-        "U": str,
-        "V": "void",
-    }
     G = nx.empty_graph(0, create_using)
     if A.ndim != 2:
         raise nx.NetworkXError(f"Input array must be 2D, not {A.ndim}")
     n, m = A.shape
     if n != m:
         raise nx.NetworkXError(f"Adjacency matrix not square: nx,ny={A.shape}")
-    dt = A.dtype
-    try:
-        python_type = kind_to_python_type[dt.kind]
-    except Exception as err:
-        raise TypeError(f"Unknown numpy data type: {dt}") from err
     if _default_nodes := (nodelist is None):
         nodelist = range(n)
     else:
@@ -1250,52 +1304,9 @@ def from_numpy_array(
 
     # Make sure we get even the isolated nodes of the graph.
     G.add_nodes_from(nodelist)
-    # Get a list of all the entries in the array with nonzero entries. These
-    # coordinates become edges in the graph. (convert to int from np.int64)
-    edges = ((int(e[0]), int(e[1])) for e in zip(*A.nonzero()))
-    # handle numpy constructed data type
-    if python_type == "void":
-        # Sort the fields by their offset, then by dtype, then by name.
-        fields = sorted(
-            (offset, dtype, name) for name, (dtype, offset) in A.dtype.fields.items()
-        )
-        triples = (
-            (
-                u,
-                v,
-                {}
-                if edge_attr in [False, None]
-                else {
-                    name: kind_to_python_type[dtype.kind](val)
-                    for (_, dtype, name), val in zip(fields, A[u, v])
-                },
-            )
-            for u, v in edges
-        )
-    # If the entries in the adjacency matrix are integers, the graph is a
-    # multigraph, and parallel_edges is True, then create parallel edges, each
-    # with weight 1, for each entry in the adjacency matrix. Otherwise, create
-    # one edge for each positive entry in the adjacency matrix and set the
-    # weight of that edge to be the entry in the matrix.
-    elif python_type is int and G.is_multigraph() and parallel_edges:
-        chain = itertools.chain.from_iterable
-        # The following line is equivalent to:
-        #
-        #     for (u, v) in edges:
-        #         for d in range(A[u, v]):
-        #             G.add_edge(u, v, weight=1)
-        #
-        if edge_attr in [False, None]:
-            triples = chain(((u, v, {}) for d in range(A[u, v])) for (u, v) in edges)
-        else:
-            triples = chain(
-                ((u, v, {edge_attr: 1}) for d in range(A[u, v])) for (u, v) in edges
-            )
-    else:  # basic data type
-        if edge_attr in [False, None]:
-            triples = ((u, v, {}) for u, v in edges)
-        else:
-            triples = ((u, v, {edge_attr: python_type(A[u, v])}) for u, v in edges)
+    # Get an iterable of weighted edge triples from the adjacency matrix.
+    triples = _generate_numpy_weighted_edges(A, G, edge_attr, parallel_edges)
+
     # If we are creating an undirected multigraph, only add the edges from the
     # upper triangle of the matrix. Otherwise, add all the edges. This relies
     # on the fact that the vertices created in the

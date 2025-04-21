@@ -80,3 +80,11 @@ class TestBiadjacencyMatrix:
         M = sp.sparse.csc_array([[1, 2], [0, 3]])
         B = bipartite.from_biadjacency_matrix(M, create_using=nx.MultiGraph())
         assert edges_equal(B.edges(), [(0, 2), (0, 3), (0, 3), (1, 3), (1, 3), (1, 3)])
+
+    def test_from_numpy_biadjacency_matrix(self):
+        M = sp.sparse.csc_array([[1, 2], [0, 3]]).asformat("dense")
+        B = bipartite.from_biadjacency_matrix(M)
+        assert edges_equal(B.edges(), [(0, 2), (0, 3), (1, 3)])
+        B = bipartite.from_biadjacency_matrix(M, edge_attribute="weight")
+        e = [(0, 2, {"weight": 1}), (0, 3, {"weight": 2}), (1, 3, {"weight": 3})]
+        assert edges_equal(B.edges(data=True), e)
